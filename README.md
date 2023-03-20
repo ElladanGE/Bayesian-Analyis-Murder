@@ -1,4 +1,4 @@
-# Bayesian Analyis of 
+# Bayesian Analyis of Homicides in London
 
 The homicides data set contains entries for all recorded homicides in London boroughs from 2003 to March
 2022. The first of the month on which the homicide occurred is given as the recorded date. I have added
