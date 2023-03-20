@@ -1,0 +1,301 @@
+---
+output:
+  pdf_document:
+    pandoc_args: --listings
+    includes:
+      in_header: preamble.tex
+---
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(MASS)
+library(brms)
+library(dplyr)
+library(bayesplot)
+library(reshape2)
+library(ggplot2)
+
+```
+
+# Exploratory Data Analysis
+
+```{r data, include=TRUE }
+homicides = read.csv('homicides.csv')
+data = read.csv('homicides.csv')
+data$solved_status = as.integer(data$solved_status == "Solved")
+
+## 75% of the sample size
+smp_size <- floor(0.75 * nrow(data))
+
+## set the seed to make your partition reproducible
+set.seed(123)
+train_ind <- sample(seq_len(nrow(data)), size = smp_size)
+
+train <- data[train_ind, ]
+test <- data[-train_ind, ]
+```
+
+First, I separate the data set into a training and test set, in a 75-25 split. I have also randomly shuffled the samples.
+
+```{r plot1, include=TRUE,out.width="75%"}
+
+# Plotting Data
+murderData = melt(train, id.vars = 'solved_status')
+ggplot(murderData) +
+  geom_point(aes(x=value, y= solved_status , colour=variable)) +
+  geom_smooth(aes(x=value, y= solved_status, colour=variable),method = lm) +
+  facet_wrap(~variable, scales="free_x")
+
+```
+
+Looking at this plot does not tell us much as the output is binary. As such, we will look at more specific plots to see any correlation in our data.
+
+```{r plot2, include = TRUE, warning=FALSE, fig.show='hold',out.width="50%",message=FALSE, error=FALSE}
+data_by_ethn = train %>% group_by(observed_ethnicity, age_group) %>% summarize(succes_rate = mean(solved_status))
+data_by_kill = train %>% group_by(method_of_killing, age_group) %>% summarize(success_rate = mean(solved_status))
+data_by_bor = train %>% group_by(borough) %>% summarize(success_rate = mean(solved_status)) 
+data_by_sex = train %>% group_by(age_group, sex) %>% summarize(success_rate = mean(solved_status))
+data_by_da = train %>% group_by(domestic_abuse, sex) %>% summarize(succes_rate = mean(solved_status)) 
+data_by_seas = train %>% group_by(year) %>% summarize(succes_rate = mean(solved_status))
+ggplot(data_by_seas, aes(x = year, y = succes_rate)) + geom_point()
+ggplot(data_by_ethn, aes(x = age_group, y = succes_rate, color = observed_ethnicity)) + geom_point()
+ggplot(data_by_bor, aes(x = borough, y = success_rate, )) + geom_point()
+ggplot(data_by_sex, aes(x = age_group, y = success_rate, color = sex)) + geom_point()
+ggplot(data_by_da, aes(x = domestic_abuse, y = succes_rate, color = sex)) + geom_point()
+ggplot(data_by_kill, aes(x = age_group, y = success_rate, color = method_of_killing)) + geom_point()
+
+```
+
+Looking at these plots, it appears that year doesn't have much of an effect on murders getting solved, similarly for boroughs. However, murders seem less likely to be solved given the individuals ethnicity and age group, particularly 13 to 19 to 35 to 44. Sex also seems to have an influence with males of a similar age group seeming less likely to have murder cases solved. Again, males not in a domestic abuse related crime also seem less likely to have their murder case solved. Finally, method of killing, particularly shootings appear to have less cases solved, again in a similar age group. We will now use our findings to build our Bayesian Model.
+
+# Bayesian Model
+
+Given our exploratory data analysis, the variables I have chosen to regress on are observed_ethnicity, sex, domestics_abuse and method_of_killing. I have decided to use age_group as my grouping variable. More formally, the model is : 
+$$
+y_{i} = 
+\begin{cases} 
+1 & \text{if Solved}  \\
+0        & \text{if Unsolved} 
+\end{cases} \
+$$
+$$
+x_{ij1} := \text{observed ethnicity}\\
+$$
+$$
+x_{ij2} := \text{sex}\\
+$$
+$$x_{ij3} := \text{domestic abuse}\\$$
+$$x_{ij4} := \text{method of killing}\\$$
+$$\text{Let }  \pi_{ij} \text{ be the probability that a murder case, } i \text{ in age group } j \text{ be solved i.e }  y_{ij} = 1\\$$
+$$y_{ij} | \beta{j}, x_{ij} \sim Bern(\pi_{ij}) \\$$ 
+$$
+\text{ with } log(\frac{\pi_{ij}}{1-\pi_{ij}}) = b_{0} + b_{1}x_{ij1} + b_{2}x_{ij2} + b_{3}x_{ij3} + b_{4}x_{ij4} + \beta_{0j} + 
+\beta_{1j}x_{ij1}+\beta_{2j}x_{ij2}+\beta_{3j}x_{ij3}+\beta_{4j}x_{ij4} \\$$
+$$\beta{j} \sim N(0, \Sigma) \text{ , } \pi(b, \Sigma)$$
+
+I will now look to set my priors and explain my reasoning. As the predictors are categorical variables, I must set a prior for each categorical value.
+
+
+$$b_{0} \sim N(2,4) \\$$
+$$b_{1,white} \sim N(0,0.6),\: b_{1, black} \sim N(0,0.4), \: b_{1, Other} \sim N(0,1), \: b_{1, Not known} \sim N(0,1) \\$$
+$$b_{2, male} \sim N(0,0.2) \\$$
+$$b_{3, notDomesticAbuse} \sim N(0,0.1) \\$$
+$$b_{4, knife} \sim N(0,0.3), \: b_{4, phys} \sim N(0,0.3), \: b_{4, shoot} \sim N(0,1)  \\$$
+$$\sigma_{0} \sim N(0,0.1) \\$$
+$$\sigma_{1,white} \sim N(0,0.05) \: \sigma_{1,black} \sim N(0,0.1) \:  \sigma_{1,Other} \sim N(0,1) \: \sigma_{1,Notknown} \sim N(0,0.1)  \\$$
+$$\sigma_{2,male} \sim N(0,0.05) \\$$
+$$\sigma_{3,notDomestiAbuse} \sim N(0,0.1) \\$$
+$$\sigma_{4, knife} \sim N(0,0.1) \: \sigma_{4, phys} \sim N(0,0.1) \: \sigma_{4, shoot} \sim N(0,0.5) \: $$
+For all priors, I have set mean 0 in the event that they do not have an impact on our baseline.
+For this model, looking at the data, I have assumed the average murder solving rate to be about 88%, but that can range from 0.01-99.99%. As such, I have set my intercept prior to be N(2,4) (logit(0.88) = 2). Looking at our other priors, these coefficients increase or decrease our baseline. For the observed ethnicity, I have assumed that white may increase our baseline to about 95%, as such, b1_white = logit(0.88) + logit(0.07)
+and |b1_white| is about 0.6. Similarly, I assume black affects the baseline, maybe decreasing it at most to 76%. As such, I have set b2 to N(0,0.4). I do however believe that Other and Not Known have a strong impact on the baseline, looking at extreme level so two standard deviations, I think It could reduce the probability of the murder being solved to 50%, as such, 2*b1_Other = logit(0.88) - logit(0.38) and so |b1_other| is approximately 1. I don't believe, domestic abuse has much impact, if any, and so that may be worth looking at during our sensitivity analysis. For the method of killings, I believe that different methods make the baseline vary between 80-99% and so have set the priors accordingly. I believe shooting heavily decreases the baseline, and so again, have set a large prior.
+For the sigmas, I think the age group will have an effect on the baseline. I believe certain age groups, for example 18-30 year old have less probability of having their case solved, whilst other age groups, like 0-12 and 40+ are less likely to be involved in crime and so have increased probability of having their case solved. Similarly, I think shooting and knife crime will be more influential for certain age groups more likely to be involved in crime. I'm not sure about the impact of certain age groups on black/white ethnicity so have set low priors. I do think the age group could have a higher impact given the age group, as older people are more likely to be in relationships, although lower age groups are more likely to suffer domestic abuse from family.
+
+```{r model, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+
+prior_int = set_prior("normal(2, 4)", class="Intercept")
+prior_b = set_prior("normal(0,0.1)", class = "b")
+prior_ethn_black = set_prior("normal(0,0.4)", class="b", coef="observed_ethnicityBlack")
+prior_ethn_white = set_prior("normal(0,0.6)", class="b", coef="observed_ethnicityWhite")
+prior_ethn_nk = set_prior("normal(0,1)", class="b", coef="observed_ethnicityNotReportedDNotknown")
+prior_ethn_other = set_prior("normal(0,0.5)", class="b", coef="observed_ethnicityOther")
+prior_sexM = set_prior("normal(0,0.2)", class = "b", coef="sexMale")
+prior_daN = set_prior("normal(0,0.1)", class = "b", coef="domestic_abuseNotDomesticAbuse")
+prior_kill_sharp = set_prior("normal(0,0.3)", class = "b", coef = "method_of_killingKnifeorSharpImplement")
+prior_kill_phys = set_prior("normal(0,0.3)", class = "b", coef = "method_of_killingPhysicalAssault")
+prior_kill_shoot = set_prior("normal(0,1)", class = "b", coef = "method_of_killingShooting")
+
+sd_priorsI = set_prior("normal(0,0.1)", class = "sd",group = "age_group", coef = "Intercept")
+sd_priors_kill = set_prior("normal(0,0.1)", class = "sd", group = "age_group", coef = "method_of_killingKnifeorSharpImplement")
+sd_priors_Phys = set_prior("normal(0,0.1)", class = "sd", group = "age_group",coef = "method_of_killingPhysicalAssault")
+sd_priors_Shot = set_prior("normal(0,0.5)", class = "sd", group = "age_group",coef = "method_of_killingShooting")
+sd_priors_B = set_prior("normal(0,0.1)", class = "sd", group = "age_group",coef = "observed_ethnicityBlack")
+sd_priors_Nr = set_prior("normal(0,1)", class = "sd",group = "age_group", coef = "observed_ethnicityNotReportedDNotknown")
+sd_priors_Oth = set_prior("normal(0,1)", class = "sd",group = "age_group", coef = "observed_ethnicityOther")
+sd_priors_W = set_prior("normal(0,0.05)", class = "sd", group = "age_group",coef = "observed_ethnicityWhite")
+sd_priors_M = set_prior("normal(0,0.05)", class = "sd",group = "age_group", coef = "sexMale")
+
+priors = c(prior_int, prior_ethn_black, prior_ethn_white, prior_daN, prior_sexM, prior_kill_phys, prior_kill_sharp
+           ,prior_kill_shoot, prior_b, sd_priorsI, sd_priors_kill, sd_priors_Phys, sd_priors_Shot, sd_priors_B, 
+           sd_priors_Nr, sd_priors_Oth, sd_priors_W, sd_priors_M, prior_ethn_nk, prior_ethn_other)
+
+murder_fit = brm(solved_status ~ observed_ethnicity + sex  + domestic_abuse + method_of_killing + (sex+observed_ethnicity+method_of_killing|age_group),
+                 family = bernoulli(link = 'logit'), prior = priors, data = train)
+
+```
+
+```{r tracplot, echo = TRUE, include = TRUE, fig.show='hold',out.width="50%", warning=FALSE}
+mcmc_plot(murder_fit, type = "trace", variable = "^b_", regex = TRUE)
+mcmc_plot(murder_fit, type = "trace", variable = "^sd_", regex = TRUE)
+summary(murder_fit)$fixed
+summary(murder_fit)$random$age_group[1:9,]
+```
+Looking at the traceplots, everything seems well mixed. The Rhat values are also fine and very close to 1. I am happy that the model has converged. Looking briefly at our summary, at the population level, our intercept is at 2.4 which is about 91%, ethnicity unknown reduces considerably our baseline, as well as method of killing shooting. Method of Killing knife however seems to increase our baseline probability. Observed ethnicity white appears to increase the baseline. Sex male appears to decrease our baseline probability. Looking at the grouping, ethnicity other and not reported/unknown seem to be heavily impacted by the age group. Method of killing shooting also appears to be impacted by the age group.
+
+Here we will look at how well our model is at predicting solved/unsolved murder cases. To assess the model, we will look at a confusion matrix, which will tell us how often it is right, and which type of errors the model is making.
+```{r predict, include = TRUE, echo = TRUE}
+preds <- predict(murder_fit, newdata=test)
+head(preds)
+a_classifier <- preds[,"Estimate"]>0.909
+ConfusionMatrix <- function(Classifier, Truth){
+  if(!(length(Classifier)==length(Truth)))
+    stop("Make the length of your vector of predictions the same as the length 
+         of the truth")
+  if(is.logical(Classifier))
+    Classifier <- as.integer(Classifier)
+  WhichClass0s <- which(Classifier < 1)
+  ZeroCompare <- Truth[WhichClass0s]
+  Predicted0 <- c(length(ZeroCompare)-sum(ZeroCompare), sum(ZeroCompare))
+  WhichClass1s <- which(Classifier>0)
+  OnesCompare <- Truth[WhichClass1s]
+  Predicted1 <- c(length(OnesCompare)-sum(OnesCompare), sum(OnesCompare))
+  ConMatrix <- cbind(Predicted0,Predicted1)
+  row.names(ConMatrix) <- c("Actual 0", "Actual 1")
+  colnames(ConMatrix) <- c("Pred 0", "Pred 1")
+  ConMatrix
+}
+
+conmat <- ConfusionMatrix(a_classifier, test$solved_status)
+conmat
+sum(diag(conmat))/sum(conmat)
+```
+First we look at our predictions, we see that the model returns a Monte Carlo estimate. This is the probability that the predicated value will be 1 (or Solved). We set everything with posterior predictive probability >0.91 to be 1 and 0 otherwise. We see that our model has approximately 68% accuracy. Looking closer, we see that the model has 54% accuracy for unsolved murders, and 70% accuracy for solved murders.
+Although the accuracy isn't very high, I am happy this model provides an adequate fit to the data.
+
+## Sensitivity
+Here we will look at what our model is sensitive to. I will analyze the impact of removing method of killing from our model.
+
+```{r sens, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+
+priors = c(prior_int, prior_ethn_black, prior_ethn_white, prior_daN, prior_sexM, prior_b, sd_priorsI, sd_priors_B, 
+           sd_priors_Nr, sd_priors_Oth, sd_priors_W, sd_priors_M, prior_ethn_nk, prior_ethn_other)
+
+sens_fit = brm(solved_status ~ observed_ethnicity + sex  + domestic_abuse + (sex+observed_ethnicity|age_group),
+                 family = bernoulli(link = 'logit'), prior = priors, data = train)
+
+```
+```{r sensitivity, echo = TRUE, include = TRUE, fig.show='hold',out.width="50%", warning=FALSE}
+mcmc_plot(sens_fit, type = "trace", variable = "^b_", regex = TRUE)
+mcmc_plot(sens_fit, type = "trace", variable = "^sd_", regex = TRUE)
+summary(sens_fit)$fixed
+summary(sens_fit)$random$age_group[1:9,]
+
+preds2 <- predict(sens_fit, newdata=test)
+head(preds2)
+a_classifier <- preds2[,"Estimate"]>0.909
+
+conmat <- ConfusionMatrix(a_classifier, test$solved_status)
+conmat
+sum(diag(conmat))/sum(conmat)
+```
+Briefly looking at our sensitivity model, we see that the model has still converged. The intercept remains 2.4. Observed ethnicity black now appears to decrease our baseline and domestic abuse seems to have more impact. Our other coefficients appear unchanged. We also see that the predictive accuracy is lower at 54%.
+Although the predictive accuracy of unsolved murders is higher, the predicitive accuracy of solved murders has heavily decreased to 52%.
+
+# Inference
+In this part, we will use the model to infer how the features of any particular homicide in London affect the probability that the case has been solved.
+```{r ranef, echo = TRUE, include = TRUE, fig.show='hold',out.width="50%"}
+mcmc_plot(murder_fit, type = "hist", variable = "^b_", regex = TRUE)
+mcmc_plot(murder_fit, type = "hist", variable = "^sd_", regex = TRUE)
+ranef(murder_fit)
+```
+
+First, looking at random effects, it appears the age group doesnt have much impact on the mean. Our estimates are all quite small and appear to be as likely to be positive and negative. The same can be said our sex Male, where the estimate do seem to be negative for ages above 18 but looking the at 95% confidence intervals, the model doesnt seem to be sure whether the effect is positive or negative. The effect of ethnicity Not Reported/Unknown seems to be higher for ages 20 to 35, our model seems confident the impact is negative i.e murder cases are less likely to be solved compared to the population average. This also appears to be the case for observed ethnicity Other, specifically for the 35 to 44 age group. Finally, method of killing shooting also seems to have a higher impact for ages 13 to 24.
+Let's look at the histogram of posterior distributions. We see that the intercept is centered around 2.4 which corresponds to about 91% and varies from 1.5 to 3.5 (88-97%). When looking at the observed ethnicity, as expected, we see that black is almost centered on 0 and has near equal chance to increase positively or negatively the mean. The same can be said for ethnicity Other. Ethnicity Not reported/Unknown however seems to high probability of negatively impacting the mean, being centered around -1. White also seems to have high probability of positively impacting the mean being centered around 0.5. Sex male also looks negative centered around -0.3, method of killing Knife seems positive and Physical Assault isn't clear. Shooting however seems very likely to be negative centered around -1.2. Looking at the standard deviation of our grouping effects, the plots seem consistent with the priors, they all seem to have moved away from mean 0, indicating an effect on the prior, most notably observed ethnicity Other. Next, we can compute these probabilities as Monte Carlo estimates.
+
+```{r MCestimate, echo = TRUE, warning=FALSE}
+samples = posterior_samples(murder_fit)
+
+sum(samples$b_sexMale<0)/length(samples$b_sexMale)
+sum(samples$b_observed_ethnicityBlack>0)/length(samples$b_observed_ethnicityBlack)
+sum(samples$b_observed_ethnicityOther>0)/length(samples$b_observed_ethnicityOther)
+sum(samples$b_observed_ethnicityWhite>0)/length(samples$b_observed_ethnicityWhite)
+sum(samples$b_method_of_killingShooting<0)/length(samples$b_method_of_killingShooting)
+sum(samples$b_method_of_killingPhysicalAssault>0)/length(samples$b_method_of_killingPhysicalAssault)
+sum(samples$b_method_of_killingKnifeorSharpImplement>0)/length(samples$b_method_of_killingKnifeorSharpImplement)
+
+sum(samples$b_domestic_abuseNotDomesticAbuse<0)/length(samples$b_domestic_abuseNotDomesticAbuse)
+
+```
+As expected, we see that sex Male has 98% probability of negatively impacting the mean i.e reducing the probability of murder being solved compared to the population average, as well as method of killing shooting, which has probability close to 100%. We see that ethnicity White has 99% probability of positively impacting the mean. Interestingly, method of killing Knife also has 84% probability of positively impacting the mean, additionally, Not Domestic Abuse does seem to have a 85% probability of negatively impacting the mean. We see however that ethnicity Other and method of killing physical assault both have probabilities close to 50% so we are unsure how they affect the mean. Ethnicity Black has 73% chance of positively impacting the mean.
+
+
+
+
+# Monte Carlo Estimate and Error
+In this section, we are generating 2 new "hypothetical homicides" during the Year after March. If we suppose the first homicide is A and the second is B, and let A,B be the events that the homicide A and B are solved. Here we will estimate : 
+$$
+P(A \land \tilde{B} | \text{data})
+$$
+In this estimate, we will use all the minium number of samples needed from the posterior, w to get an MC error $$<=0.01$$. If we wanted the minimum number of samples required, we can calculate that as so :
+$$
+N > \hat{p}/(1-\hat{p})/0.01^{2}
+$$
+```{r MCEstAndErr, echo = TRUE, include = TRUE}
+curated_cols <- c("recorded_date","age_group","sex","observed_ethnicity","domestic_abuse",
+                  "borough","method_of_killing")
+new_dates <- as.Date(c("2022-04-01", "2022-05-01", "2022-06-01",
+                       "2022-07-01", "2022-08-01", "2022-09-01",
+                       "2022-10-01", "2022-11-01", "2022-12-01"))
+curated_homs <- dplyr::select(homicides, all_of(curated_cols))
+hypothetical_homicides <- tibble(recorded_date = sample(new_dates, 2, TRUE))
+month_tibble <- read.csv("month_tibble.csv")
+for(i in 2:length(names(curated_homs))){
+  hypothetical_homicides <- cbind(hypothetical_homicides,
+                                  sample(as.vector(unlist(unique(curated_homs[,i]))),2,TRUE))
+}
+names(hypothetical_homicides) <- names(curated_homs)
+month_tibble$recorded_date = as.Date(month_tibble$recorded_date)
+hypothetical_homicides <- as_tibble(hypothetical_homicides) %>%
+  left_join(month_tibble, by = "recorded_date")
+print(hypothetical_homicides)
+
+
+pred = predict(murder_fit, hypothetical_homicides, summary = FALSE)
+
+MonteCarlo = function(N){
+  prob = 0
+  for (i in 1:N){
+    if (pred[i,1] == 1 && pred[i,2] == 0){
+      prob = prob + 1
+    }
+  }
+  estimate = prob/N
+  mcerror = sqrt(estimate*(1-estimate)/N)
+  return(list(MCestimate = estimate, Error = mcerror))
+}
+N = 100
+tMC = MonteCarlo(N)
+while (tMC$Error > 0.01){
+  N = N + 1
+  tMC = MonteCarlo(N)
+}
+N
+tMC
+  
+```
+
+And so, our Monte Carlo estimate and error are as above, as well as the number of samples used.
